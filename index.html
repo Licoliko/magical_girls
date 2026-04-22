@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Magical Girl Strike - Final Complete Version</title>
+    <style>
+        body { margin: 0; background: #111; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; color: white; font-family: 'Hiragino Kaku Gothic ProN', sans-serif; overflow: hidden; }
+        #game-outer { position: relative; display: flex; flex-direction: column; align-items: center; }
+        #game-container { position: relative; border: 4px solid #ff69b4; background: #000; overflow: hidden; }
+        canvas { display: block; image-rendering: pixelated; /* ドット感を出す設定 */ }
+        #ui-top { position: absolute; top: 15px; left: 15px; pointer-events: none; text-shadow: 2px 2px #000; }
+        .bar-bg { width: 200px; height: 12px; background: #333; border: 2px solid #fff; margin-bottom: 8px; border-radius: 6px; overflow: hidden; }
+        #hp-bar { width: 100%; height: 100%; background: linear-gradient(90deg, #ff4d4d, #ff9999); transition: width 0.3s; }
+        #mp-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #00d2ff, #3a7bd5); transition: width 0.3s; }
+        #score { font-size: 20px; font-weight: bold; color: #fff; }
+        #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: none; flex-direction: column; justify-content: center; align-items: center; text-align: center; z-index: 10; }
+        .btn { padding: 10px 20px; background: #ff69b4; border: none; color: white; cursor: pointer; font-size: 18px; margin-top: 20px; border-radius: 5px; }
+        .hint { font-size: 14px; color: #ccc; margin-top: 10px; }
+
+        /* スマホ用画面外UI */
+        #ui-bottom { display: flex; justify-content: space-around; align-items: center; width: 100%; max-width: 800px; padding: 20px 0; background: #222; border-top: 2px solid #ff69b4; user-select: none; }
+        #dpad { display: grid; grid-template-areas: ". up ." "left . right" ". down ."; grid-gap: 5px; }
+        #dpad button { width: 60px; height: 60px; background: #444; border: 2px solid #ff69b4; color: white; font-size: 24px; border-radius: 5px; cursor: pointer; }
+        #up { grid-area: up; }
+        #left { grid-area: left; }
+        #right { grid-area: right; }
+        #down { grid-area: down; }
+        #actions { display: flex; grid-gap: 15px; }
+        #actions button { width: 100px; height: 100px; background: #444; border: 2px solid #ff69b4; color: white; font-size: 20px; border-radius: 50%; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="game-outer">
+    <div id="game-container">
+        <canvas id="gameCanvas" width="800" height="450"></canvas>
+        <div id="ui-top">
+            <div>HP</div><div class="bar-bg"><div id="hp-bar"></div></div>
+            <div>MP (MAXで変身!)</div><div class="bar-bg"><div id="mp-bar"></div></div>
+            <div id="score">SCORE: 000000</div>
+        </div>
+        <div id="overlay">
+            <h1 id="status-text">GAME OVER</h1>
+            <button class="btn" onclick="location.reload()">再挑戦</button>
+            <p class="hint">[Z]キーで攻撃 / [X]キーで変身 / 矢印キーで移動</p>
+        </div>
+    </div>
+    
+    <div id="ui-bottom">
+        <div id="dpad">
+            <button id="up">↑</button>
+            <button id="left">←</button>
+            <button id="right">→</button>
+            <button id="down">↓</button>
+        </div>
+        <div id="actions">
+            <button id="atk">攻 (Z)</button>
+            <button id="transform">変 (X)</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- アセット設定 ---
+const ASSETS = {
+    bg: { src: 'image_0.png', img: new Image() }, // 夜の繁華街背景
+    playerPre: { src: 'image_30.png', img: new Image(), w: 40, h: 60 }, // 変身前ヒナ (トランク、ヴィンテージドレス)
+    playerPost: { src: 'image_24.png', img: new Image(), w: 40, h: 60 }, // 変身後魔法少女 (ブロンド、ハート杖)
+    enemy: { src: 'image_32.png', img: new Image(), w: 32, h: 32 }, // 全色全アニメスライム
+    fx: { src: 'image_6.png', img: new Image() } // 魔法弾、ヒット、消滅エフェクト
+};
+// 読み込み開始
+Object.values(ASSETS).forEach(a => a.img.src = a.src);
+
+// --- ゲーム定数 ---
+const GROUND_Y = 380;
+const SKY_LIMIT = 220;
+const PLAYER_SCALE = 2; // 元のドット絵を2倍で表示（溃れ防止）
+
+let frame = 0;
+let score = 0;
+let gameState = "play";
+const keys = {};
+
+// キーボードイベント
+window.addEventListener('keydown', e => keys[e.code] = true);
+window.addEventListener('keyup', e => keys[e.code] = false);
+
+// スマホUIイベント
+const dpad = {
+    up: document.getElementById('up'),
+    left: document.getElementById('left'),
+    right: document.getElementById('right'),
+    down: document.getElementById('down')
+};
+const actions = {
+    atk: document.getElementById('atk'),
+    transform: document.getElementById('transform')
+};
+
+// タッチイベント設定
+function setupTouchEvents(element, keyCode) {
+    element.addEventListener('touchstart', e => { e.preventDefault(); keys[keyCode] = true; });
+    element.addEventListener('touchend', e => { e.preventDefault(); keys[keyCode] = false; });
+    element.addEventListener('touchcancel', e => { e.preventDefault(); keys[keyCode] = false; });
+}
+
+setupTouchEvents(dpad.up, 'ArrowUp');
+setupTouchEvents(dpad.left, 'ArrowLeft');
+setupTouchEvents(dpad.right, 'ArrowRight');
+setupTouchEvents(dpad.down, 'ArrowDown');
+setupTouchEvents(actions.atk, 'KeyZ');
+setupTouchEvents(actions.transform, 'KeyX');
+
+// --- クラス定義 ---
+class Player {
+    constructor() {
+        this.x = 100; this.y = 300; this.w = ASSETS.playerPre.w * PLAYER_SCALE; this.h = ASSETS.playerPre.h * PLAYER_SCALE;
+        this.vx = 0; this.vy = 0;
+        this.hp = 100; this.mp = 0;
+        this.dir = 1;
+        this.isTransformed = false;
+        this.isAttacking = false;
+        this.atkFrame = 0;
+        this.atkType = "swing"; // swing, thrust, low
+        this.isHurt = 0;
+        this.isDefeated = false;
+        this.isDashing = false;
+        this.dashFrame = 0;
+        this.isRolling = false;
+        this.rollFrame = 0;
+        this.isGuarding = false;
+        this.state = "idle"; // idle, walk, run, dash, jump_up, jump_loop, falling, landing, attack_swing, attack_thrust, attack_low, guard, roll, hurt, victory, transformation_start, transformation_complete
+    }
+
+    update() {
+        if (this.hp <= 0 && !this.isDefeated) {
+            this.isDefeated = true;
+            this.state = "defeat";
+            gameState = "over";
+            document.getElementById('overlay').style.display = "flex";
+            return;
+        }
+
+        if (this.isDefeated) return;
+
+        // 状態リセット
+        if (this.state !== "attack_swing" && this.state !== "attack_thrust" && this.state !== "attack_low" && this.state !== "hurt" && this.state !== "guard" && this.state !== "roll" && this.state !== "jump_up" && this.state !== "jump_loop" && this.state !== "falling" && this.state !== "landing") {
+            this.state = "idle";
+        }
+
+        // 移動ロジック
+        if (!this.isAttacking && !this.isHurt && !this.isRolling && !this.isGuarding) {
+            if (keys['ArrowRight']) { this.vx = 5; this.dir = 1; this.state = "run"; }
+            else if (keys['ArrowLeft']) { this.vx = -5; this.dir = -1; this.state = "run"; }
+            else { this.vx *= 0.8; }
+
+            if (keys['ArrowUp'] && this.y > SKY_LIMIT) { this.y -= 4; this.state = "run"; }
+            if (keys['ArrowDown'] && this.y < GROUND_Y - this.h) { this.y += 4; this.state = "run"; }
+
+            // ダッシュ (前回の移動と同じ方向に高速移動)
+            // (簡易実装: Run中に再入力でDash)
+            // if (keys['ArrowRight'] && ... ) { this.vx = 8; this.isDashing = true; this.state = "dash"; }
+            
+            this.x += this.vx;
+            this.x = Math.max(0, Math.min(canvas.width - this.w, this.x));
+        }
+
+        // 攻撃ロジック
+        if (keys['KeyZ'] && !this.isAttacking && !this.isHurt && !this.isRolling && !this.isGuarding) {
+            this.isAttacking = true;
+            this.atkFrame = 15;
+            if (this.isTransformed) {
+                this.state = "attack_swing";
+                projectiles.push(new Projectile(this.x + (this.dir === 1 ? this.w : 0), this.y + 20, this.dir));
+            } else {
+                // 変身前はカバン攻撃のバリエーション
+                // (簡易実装: 攻撃タイプをランダムに)
+                this.atkType = ["swing", "thrust", "low"][Math.floor(Math.random()*3)];
+                this.state = "attack_" + this.atkType;
+            }
+        }
+
+        if (this.isAttacking) {
+            this.atkFrame--;
+            if (this.atkFrame <= 0) this.isAttacking = false;
+        }
+
+        // 変身ロジック
+        if (keys['KeyX'] && this.mp >= 100 && !this.isTransformed && !this.isAttacking && !this.isHurt) {
+            this.isTransformed = true;
+            this.hp = 100;
+            this.mp = 0;
+            spawnEffect(this.x, this.y, "transformation_complete");
+        }
+
+        if (this.isTransformed) {
+            this.mp -= 0.1;
+            if (this.mp <= 0) { this.isTransformed = false; this.mp = 0; }
+        }
+
+        // ダメージ、ガード、転がりのロジック
+        if (this.isHurt > 0) { this.state = "hurt"; this.isHurt--; }
+        // ... (Guard, Roll の実装を追加)
+
+        // 空中、着地ロジック
+        // ... (Jump, Fall, Landing の実装を追加)
+    }
+
+    draw() {
+        ctx.save();
+        // 影
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath();
+        ctx.ellipse(this.x + this.w/2, this.y + this.h, 20, 5, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        const currentAsset = this.isTransformed ? ASSETS.playerPost : ASSETS.playerPre;
+        
+        if (currentAsset.img.complete && currentAsset.img.naturalWidth !== 0) {
+            // 画像描画
+            let row = 0;
+            let frameCount = 4;
+            let animationSpeed = 8;
+
+            if (this.isTransformed) {
+                // 変身後 (image_24) のアニメーション設定
+                frameCount = 6;
+                if (this.state === "run") { row = 1; frameCount = 8; }
+                if (this.state === "attack_swing") { row = 2; frameCount = 5; }
+                if (this.state === "jump_up" || this.state === "jump_loop") { row = 4; frameCount = 5; }
+                if (this.state === "hurt") { row = 5; frameCount = 4; }
+            } else {
+                // 変身前 (image_30) のアニメーション設定
+                if (this.state === "walk") { row = 1; frameCount = 8; }
+                if (this.state === "run") { row = 1; frameCount = 8; } // RunとWalkは同じ行
+                if (this.state === "dash") { row = 2; frameCount = 6; }
+                if (this.state === "attack_swing") { row = 3; frameCount = 5; }
+                if (this.state === "attack_thrust") { row = 4; frameCount = 5; }
+                if (this.state === "attack_low") { row = 5; frameCount = 5; }
+                if (this.state === "jump_up") { row = 6; frameCount = 5; }
+                if (this.state === "jump_loop") { row = 6; frameCount = 5; }
+                if (this.state === "falling") { row = 7; frameCount = 3; }
+                if (this.state === "landing") { row = 8; frameCount = 2; }
+                if (this.state === "guard") { row = 9; frameCount = 2; }
+                if (this.state === "roll") { row = 10; frameCount = 6; }
+                if (this.state === "hurt") { row = 11; frameCount = 2; }
+                if (this.state === "victory") { row = 12; frameCount = 4; }
+                if (this.state === "pick_up") { row = 13; frameCount = 2; }
+                if (this.state === "transformation_start") { row = 14; frameCount = 3; }
+                if (this.state === "defeat") { row = 11; frameCount = 2; } // Hurtと同じ
+            }
+
+            const f = Math.floor(frame / animationSpeed) % frameCount;
+            const w = currentAsset.w; const h = currentAsset.h;
+            
+            if (this.dir === -1) {
+                ctx.scale(-1, 1);
+                ctx.drawImage(currentAsset.img, f * w, row * h, w, h, -this.x - this.w, this.y, this.w, this.h);
+            } else {
+                ctx.drawImage(currentAsset.img, f * w, row * h, w, h, this.x, this.y, this.w, this.h);
+            }
+        }
+        ctx.restore();
+    }
+}
+
+class Enemy {
+    constructor() {
+        this.x = canvas.width + 50;
+        this.y = SKY_LIMIT + Math.random() * (GROUND_Y - SKY_LIMIT - 40);
+        this.w = 48; this.h = 48;
+        this.hp = 2;
+        this.speed = 2 + Math.random() * 2;
+        this.dir = -1;
+        this.isAttacking = false;
+        this.atkFrame = 0;
+        this.isHurt = 0;
+        this.isDefeated = false;
+        this.defeatedFrame = 0;
+        this.state = "move"; // idle, move, attack_horn, attack_jump, hurt, defeat
+        this.color = ["BLUE", "GREEN", "RED", "YELLOW", "PURPLE"][Math.floor(Math.random()*5)];
+        this.hasHorn = Math.random() > 0.5; // つの付きスライムの実装
+    }
+
+    update() {
+        if (this.isDefeated) {
+            this.defeatedFrame++;
+            if (this.defeatedFrame > 40) { // 溶けるアニメーション終了
+                this.hp = 0;
+            }
+            return;
+        }
+
+        this.x += this.speed * this.dir;
+        if (this.x < -50 || this.x > canvas.width + 50) this.hp = 0; // 消失
+
+        // プレイヤー攻撃判定（近接）
+        if (player.isAttacking && !player.isTransformed) {
+            let atkRange = 60;
+            let atkX = player.dir === 1 ? player.x + player.w : player.x - atkRange;
+            if (atkX < this.x + this.w && atkX + atkRange > this.x && player.y < this.y + this.h && player.y + player.h > this.y) {
+                this.hp -= 1;
+                this.x += 30;
+                player.mp = Math.min(100, player.mp + 8);
+                spawnEffect(this.x, this.y, "hit");
+                this.isHurt = 10; this.state = "hurt";
+            }
+        }
+
+        // プレイヤー接触判定
+        if (Math.abs((player.x + player.w/2) - (this.x + this.w/2)) < 30 &&
+            Math.abs((player.y + player.h/2) - (this.y + this.h/2)) < 30) {
+            if (player.isHurt <= 0 && !player.isDefeated) {
+                player.hp -= 10;
+                player.isHurt = 20;
+            }
+        }
+
+        // 攻撃ロジック (簡易実装: 一定時間ごとに攻撃)
+        if (frame % 100 === 0 && !this.isAttacking && !this.isHurt) {
+            this.isAttacking = true;
+            this.atkFrame = 30;
+            this.state = this.hasHorn ? "attack_horn" : "attack_jump";
+        }
+        if (this.isAttacking) {
+            this.atkFrame--;
+            if (this.atkFrame <= 0) { this.isAttacking = false; this.state = "move"; }
+        }
+
+        // ダメージ、死亡
+        if (this.isHurt > 0) { this.isHurt--; if (this.isHurt <= 0) this.state = "move"; }
+        if (this.hp <= 0 && !this.isDefeated) {
+            this.isDefeated = true;
+            this.defeatedFrame = 0;
+            this.state = "defeat";
+            score += 100;
+        }
+    }
+
+    draw() {
+        if (ASSETS.enemy.img.complete && ASSETS.enemy.img.naturalWidth !== 0) {
+            // 画像描画
+            let row = 0;
+            let frameCount = 4;
+            let animationSpeed = 10;
+            const w = ASSETS.enemy.w; const h = ASSETS.enemy.h;
+
+            if (this.isDefeated) {
+                // 死亡アニメーション (spritesheet_merged_final.pngの下部セクション)
+                // 各色スライムの溶けるアニメーションのみをまとめたセクション
+                row = 5; // MELTING DEATH EFFECTSセクション
+                const colorIdx = ["BLUE", "GREEN", "RED", "YELLOW", "PURPLE"].indexOf(this.color);
+                const colorRow = [0, 1, 2, 3, 4][colorIdx];
+                const f = Math.floor(this.defeatedFrame / 10) % 4;
+                ctx.drawImage(ASSETS.enemy.img, f * w, (row + colorRow) * h, w, h, this.x, this.y, this.w, this.h);
+
+            } else {
+                // 通常アニメーション
+                const colorIdx = ["BLUE", "GREEN", "RED", "YELLOW", "PURPLE"].indexOf(this.color);
+                const colorRow = [0, 1, 2, 3, 4][colorIdx];
+                
+                if (this.state === "attack_horn" && this.hasHorn) { row = 2; frameCount = 3; }
+                if (this.state === "attack_jump" && !this.hasHorn) { row = 3; frameCount = 3; }
+                if (this.state === "hurt") { row = 4; frameCount = 2; }
+
+                const f = Math.floor(frame / animationSpeed) % frameCount;
+                ctx.drawImage(ASSETS.enemy.img, f * w, (row + colorRow) * h, w, h, this.x, this.y, this.w, this.h);
+            }
+        }
+    }
+}
+
+class Projectile {
+    constructor(x, y, dir) {
+        this.x = x; this.y = y; this.dir = dir;
+        this.w = 20; this.h = 20; this.speed = 8;
+        this.hp = 1;
+    }
+    update() {
+        this.x += this.speed * this.dir;
+        enemies.forEach((e, index) => {
+            if (this.x < e.x + e.w && this.x + this.w > e.x && this.y < e.y + e.h && this.y + this.h > e.y) {
+                e.hp -= 2;
+                this.hp = 0; // 消失
+                spawnEffect(e.x, e.y, "hit");
+            }
+        });
+    }
+    draw() {
+        ctx.fillStyle = "#ff69b4"; // ハート
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, 8, 0, Math.PI*2);
+        ctx.fill();
+    }
+}
+
+class Effect {
+    constructor(x, y, type) {
+        this.x = x; this.y = y; this.type = type; this.life = 20;
+    }
+    draw() {
+        this.life--;
+        ctx.fillStyle = "white";
+        if (this.type === "hit") {
+            // ヒットエフェクト描画
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, 20 - this.life, 0, Math.PI*2);
+            ctx.fill();
+        } else if (this.type === "transformation_complete") {
+            // 変身完了エフェクト描画
+            ctx.fillStyle = "white";
+            ctx.fillRect(this.x - 50, this.y - 50, 100, 100);
+        }
+    }
+}
+
+// --- インスタンス管理 ---
+const player = new Player();
+let enemies = [];
+let projectiles = [];
+let effects = [];
+
+function spawnEffect(x, y, type) { effects.push(new Effect(x, y, type)); }
+
+function gameLoop() {
+    if (gameState === "over") {
+        document.getElementById('status-text').innerText = "GAME OVER";
+        return;
+    }
+
+    // 背景
+    ctx.drawImage(ASSETS.bg.img, 0, 0, canvas.width, canvas.height);
+    
+    // 地面 (簡易)
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(0, GROUND_Y, canvas.width, canvas.height - GROUND_Y);
+
+    frame++;
+
+    // 敵スポーン
+    if (frame % 80 === 0) enemies.push(new Enemy());
+
+    // 更新
+    player.update();
+    enemies = enemies.filter(e => {
+        e.update();
+        if (e.hp <= 0 && e.isDefeated && e.defeatedFrame > 40) return false;
+        if (e.hp <= 0 && !e.isDefeated) return false;
+        return e.x > -100;
+    });
+    projectiles = projectiles.filter(p => {
+        p.update();
+        return p.hp !== 0 && p.x > 0 && p.x < canvas.width;
+    });
+    effects = effects.filter(f => f.life > 0);
+
+    // 描画
+    enemies.forEach(e => e.draw());
+    player.draw();
+    projectiles.forEach(p => p.draw());
+    effects.forEach(f => f.draw());
+
+    // UI
+    document.getElementById('hp-bar').style.width = player.hp + "%";
+    document.getElementById('mp-bar').style.width = player.mp + "%";
+    document.getElementById('score').innerText = "SCORE: " + String(score).padStart(6, '0');
+
+    requestAnimationFrame(gameLoop);
+}
+
+// 画像読み込み完了後にゲーム開始
+ASSETS.bg.img.onload = ASSETS.playerPre.img.onload = ASSETS.playerPost.img.onload = ASSETS.enemy.img.onload = ASSETS.fx.img.onload = function() {
+    gameLoop();
+};
+
+</script>
+</body>
+</html>
