@@ -2,13 +2,13 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Magical Girl Strike - Final Complete Version</title>
+    <title>Magical Girl Strike - Final Complete Version (修正版)</title>
     <style>
         body { margin: 0; background: #111; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; color: white; font-family: 'Hiragino Kaku Gothic ProN', sans-serif; overflow: hidden; }
         #game-outer { position: relative; display: flex; flex-direction: column; align-items: center; }
         #game-container { position: relative; border: 4px solid #ff69b4; background: #000; overflow: hidden; }
         canvas { display: block; image-rendering: pixelated; /* ドット感を出す設定 */ }
-        #ui-top { position: absolute; top: 15px; left: 15px; pointer-events: none; text-shadow: 2px 2px #000; }
+        #ui-top { position: absolute; top: 15px; left: 15px; pointer-events: none; text-shadow: 2px 2px #000; z-index: 100; }
         .bar-bg { width: 200px; height: 12px; background: #333; border: 2px solid #fff; margin-bottom: 8px; border-radius: 6px; overflow: hidden; }
         #hp-bar { width: 100%; height: 100%; background: linear-gradient(90deg, #ff4d4d, #ff9999); transition: width 0.3s; }
         #mp-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #00d2ff, #3a7bd5); transition: width 0.3s; }
@@ -18,7 +18,7 @@
         .hint { font-size: 14px; color: #ccc; margin-top: 10px; }
 
         /* スマホ用画面外UI */
-        #ui-bottom { display: flex; justify-content: space-around; align-items: center; width: 100%; max-width: 800px; padding: 20px 0; background: #222; border-top: 2px solid #ff69b4; user-select: none; }
+        #ui-bottom { display: flex; justify-content: space-around; align-items: center; width: 100%; max-width: 800px; padding: 20px 0; background: #222; border-top: 2px solid #ff69b4; user-select: none; box-sizing: border-box; }
         #dpad { display: grid; grid-template-areas: ". up ." "left . right" ". down ."; grid-gap: 5px; }
         #dpad button { width: 60px; height: 60px; background: #444; border: 2px solid #ff69b4; color: white; font-size: 24px; border-radius: 5px; cursor: pointer; }
         #up { grid-area: up; }
@@ -65,15 +65,29 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
 // --- アセット設定 ---
-const ASSETS = {
-    bg: { src: 'image_0.png', img: new Image() }, // 夜の繁華街背景
-    playerPre: { src: 'image_30.png', img: new Image(), w: 40, h: 60 }, // 変身前ヒナ (トランク、ヴィンテージドレス)
-    playerPost: { src: 'image_24.png', img: new Image(), w: 40, h: 60 }, // 変身後魔法少女 (ブロンド、ハート杖)
-    enemy: { src: 'image_32.png', img: new Image(), w: 32, h: 32 }, // 全色全アニメスライム
-    fx: { src: 'image_6.png', img: new Image() } // 魔法弾、ヒット、消滅エフェクト
+const ASSETS_RAW = {
+    bg: 'image_0.png', // 夜の繁華街背景
+    playerPre: 'image_30.png', // 変身前ヒナ (トランク、ヴィンテージドレス)
+    playerPost: 'image_24.png', // 変身後魔法少女 (ブロンド、ハート杖)
+    enemy: 'image_32.png', // 全色全アニメスライム
+    fx: 'image_6.png' // 魔法弾、ヒット、消滅エフェクト
 };
-// 読み込み開始
-Object.values(ASSETS).forEach(a => a.img.src = a.src);
+
+const ASSETS = {};
+const promises = [];
+
+// Promise.allを使用して、全アセットのonloadを確実に待つ (修正)
+Object.entries(ASSETS_RAW).forEach(([key, src]) => {
+    ASSETS[key] = { src: src, img: new Image(), w: key.includes('enemy') ? 32 : 40, h: key.includes('enemy') ? 32 : 60 };
+    promises.push(new Promise((resolve, reject) => {
+        ASSETS[key].img.onload = () => resolve();
+        ASSETS[key].img.onerror = () => {
+            console.warn(`Failed to load asset: ${src}`);
+            resolve(); // 画像がなくてもゲームは開始するように
+        };
+        ASSETS[key].img.src = src;
+    }));
+});
 
 // --- ゲーム定数 ---
 const GROUND_Y = 380;
@@ -133,7 +147,7 @@ class Player {
         this.isRolling = false;
         this.rollFrame = 0;
         this.isGuarding = false;
-        this.state = "idle"; // idle, walk, run, dash, jump_up, jump_loop, falling, landing, attack_swing, attack_thrust, attack_low, guard, roll, hurt, victory, transformation_start, transformation_complete
+        this.state = "idle"; // idle, walk, run, dash, jump_up, jump_loop, falling, landing, attack_swing, attack_thrust, attack_low, guard, roll, hurt, victory, transformation_start, transformation_complete, defeat
     }
 
     update() {
@@ -147,8 +161,9 @@ class Player {
 
         if (this.isDefeated) return;
 
-        // 状態リセット
-        if (this.state !== "attack_swing" && this.state !== "attack_thrust" && this.state !== "attack_low" && this.state !== "hurt" && this.state !== "guard" && this.state !== "roll" && this.state !== "jump_up" && this.state !== "jump_loop" && this.state !== "falling" && this.state !== "landing") {
+        // 状態リセットロジック (修正: statesToKeepを修正)
+        const statesToKeep = ["attack_swing", "attack_thrust", "attack_low", "hurt", "guard", "roll", "jump_up", "jump_loop", "falling", "landing", "transformation_start", "victory"];
+        if (!statesToKeep.includes(this.state)) {
             this.state = "idle";
         }
 
@@ -262,6 +277,26 @@ class Player {
                 ctx.drawImage(currentAsset.img, f * w, row * h, w, h, -this.x - this.w, this.y, this.w, this.h);
             } else {
                 ctx.drawImage(currentAsset.img, f * w, row * h, w, h, this.x, this.y, this.w, this.h);
+            }
+        } else {
+            // フォールバック（矩形描画） (修正: アクションに応じて矩形を変える)
+            ctx.fillStyle = this.isTransformed ? "#ff69b4" : "#4a4e69";
+            if (this.state === "hurt") ctx.fillStyle = "white";
+            if (this.state.includes("attack")) ctx.fillStyle = "#ffcc00"; // 攻撃中は黄色系
+
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            
+            // 茶髪 (変身前) またはブロンド (変身後)
+            ctx.fillStyle = this.isTransformed ? "#ffeb3b" : "#8b4513";
+            ctx.fillRect(this.x + (this.dir === 1 ? 20 : 5), this.y - 10, 20, 20); // 髪
+
+            // トランク (変身前) または杖 (変身後)
+            if (!this.isTransformed) {
+                ctx.fillStyle = "#a52a2a"; // トランク
+                ctx.fillRect(this.x + (this.dir === 1 ? -15 : 20), this.y + 20, 20, 20); 
+            } else {
+                ctx.fillStyle = "#ff69b4"; // 杖
+                ctx.fillRect(this.x + (this.dir === 1 ? -15 : 20), this.y + 20, 10, 30);
             }
         }
         ctx.restore();
@@ -433,7 +468,8 @@ function gameLoop() {
     }
 
     // 背景
-    ctx.drawImage(ASSETS.bg.img, 0, 0, canvas.width, canvas.height);
+    if (ASSETS.bg.img.complete) { ctx.drawImage(ASSETS.bg.img, 0, 0, canvas.width, canvas.height); }
+    else { ctx.fillStyle = "#1a1a2e"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
     
     // 地面 (簡易)
     ctx.fillStyle = "rgba(0,0,0,0.5)";
@@ -472,10 +508,10 @@ function gameLoop() {
     requestAnimationFrame(gameLoop);
 }
 
-// 画像読み込み完了後にゲーム開始
-ASSETS.bg.img.onload = ASSETS.playerPre.img.onload = ASSETS.playerPost.img.onload = ASSETS.enemy.img.onload = ASSETS.fx.img.onload = function() {
+// 画像読み込み完了後にゲーム開始 (修正: Promise.allを使用)
+Promise.all(promises).then(() => {
     gameLoop();
-};
+});
 
 </script>
 </body>
